@@ -19,18 +19,19 @@ import org.janusgraph.diskstorage.BackendException;
 import org.janusgraph.diskstorage.DistributedStoreManagerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreDistributedStoreManagerTest extends DistributedStoreManagerTest<TableStoreStoreManager> {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @BeforeEach
     public void setUp() throws BackendException {
+        System.out.println("=-=-=-=-=");
         manager = new TableStoreStoreManager(tableStoreContainer.getModifiableConfiguration());
+        System.out.println("2=-=-=-=-=");
         store = manager.openDatabase("distributedStoreTest");
+        System.out.println("3=-=-=-=-=");
     }
 
     @AfterEach

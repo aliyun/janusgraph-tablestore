@@ -18,12 +18,10 @@ import org.janusgraph.TableStoreContainer;
 import org.janusgraph.diskstorage.BackendException;
 import org.janusgraph.diskstorage.keycolumnvalue.KeyColumnValueStoreManager;
 import org.janusgraph.diskstorage.log.KCVSLogTest;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreLogTest extends KCVSLogTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Override

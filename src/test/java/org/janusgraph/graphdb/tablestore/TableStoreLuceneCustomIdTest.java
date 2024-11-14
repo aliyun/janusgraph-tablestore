@@ -18,17 +18,15 @@ import org.janusgraph.TableStoreContainer;
 import org.janusgraph.StorageSetup;
 import org.janusgraph.diskstorage.configuration.ModifiableConfiguration;
 import org.janusgraph.graphdb.JanusGraphCustomIdIndexTest;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.INDEX_BACKEND;
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.INDEX_DIRECTORY;
 
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreLuceneCustomIdTest extends JanusGraphCustomIdIndexTest {
 
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Override

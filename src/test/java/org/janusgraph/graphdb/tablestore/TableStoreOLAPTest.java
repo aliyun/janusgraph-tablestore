@@ -17,12 +17,10 @@ package org.janusgraph.graphdb.tablestore;
 import org.janusgraph.TableStoreContainer;
 import org.janusgraph.diskstorage.configuration.WriteConfiguration;
 import org.janusgraph.olap.OLAPTest;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreOLAPTest extends OLAPTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Override

@@ -19,12 +19,10 @@ import org.janusgraph.diskstorage.BackendException;
 import org.janusgraph.diskstorage.LockKeyColumnValueStoreTest;
 import org.janusgraph.diskstorage.configuration.Configuration;
 import org.janusgraph.diskstorage.keycolumnvalue.KeyColumnValueStoreManager;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreLockStoreTest extends LockKeyColumnValueStoreTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     public KeyColumnValueStoreManager openStorageManager(int idx, Configuration configuration) throws BackendException {

@@ -28,8 +28,6 @@ import org.janusgraph.diskstorage.keycolumnvalue.KCVMutation;
 import org.janusgraph.diskstorage.util.StaticArrayBuffer;
 import org.janusgraph.diskstorage.util.StaticArrayEntry;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,9 +39,9 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreStoreManagerMutationTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Test
@@ -93,7 +91,7 @@ public class TableStoreStoreManagerMutationTest {
         }
         storeMutationMap.put("store1", rowkeyMutationMap);
         TableStoreStoreManager manager = new TableStoreStoreManager(tableStoreContainer.getModifiableConfiguration());
-        final Map<StaticBuffer, Pair<List<Put>, Delete>> commandsPerRowKey
+        final Map<StaticBuffer, Pair<List<Put>, List<Delete>>> commandsPerRowKey
             = manager.convertToCommands(storeMutationMap, 0L, 0L).values().stream().findFirst().orElse(null);
 
         // 2 rows
@@ -102,7 +100,7 @@ public class TableStoreStoreManagerMutationTest {
         // Verify puts
         final List<Long> putColumnsWithTTL = new ArrayList<>();
         final List<Long> putColumnsWithoutTTL = new ArrayList<>();
-        Pair<List<Put>, Delete> commands = commandsPerRowKey.values().iterator().next();
+        Pair<List<Put>, List<Delete>> commands = commandsPerRowKey.values().iterator().next();
         long colName;
         for (Put p : commands.getFirst()) {
             // In Put, Long.MAX_VALUE means no TTL
@@ -124,11 +122,13 @@ public class TableStoreStoreManagerMutationTest {
 
         // Verify deletes
         final List<Long> deleteColumns = new ArrayList<>();
-        Delete d = commands.getSecond();
-        for (Map.Entry<byte[], List<Cell>> me : d.getFamilyCellMap().entrySet()) {
-            for (Cell c : me.getValue()) {
-                colName = KeyColumnValueStoreUtil.bufferToLong(new StaticArrayBuffer(CellUtil.cloneQualifier(c)));
-                deleteColumns.add(colName);
+        List<Delete> dList = commands.getSecond();
+        for (Delete d : dList) {
+            for (Map.Entry<byte[], List<Cell>> me : d.getFamilyCellMap().entrySet()) {
+                for (Cell c : me.getValue()) {
+                    colName = KeyColumnValueStoreUtil.bufferToLong(new StaticArrayBuffer(CellUtil.cloneQualifier(c)));
+                    deleteColumns.add(colName);
+                }
             }
         }
         Collections.sort(deleteColumns);
@@ -161,9 +161,9 @@ public class TableStoreStoreManagerMutationTest {
         rowkeyMutationMap.put(rowkey, new KCVMutation(additions, deletions));
         storeMutationMap.put("store1", rowkeyMutationMap);
         TableStoreStoreManager manager = new TableStoreStoreManager(tableStoreContainer.getModifiableConfiguration());
-        final Map<StaticBuffer, Pair<List<Put>, Delete>> commandsPerRowKey
+        final Map<StaticBuffer, Pair<List<Put>, List<Delete>>> commandsPerRowKey
             = manager.convertToCommands(storeMutationMap, 0L, 0L).values().stream().findFirst().orElse(null);
-        Pair<List<Put>, Delete> commands = commandsPerRowKey.values().iterator().next();
+        Pair<List<Put>, List<Delete>> commands = commandsPerRowKey.values().iterator().next();
 
         //Verify Put TTL
         Put put = commands.getFirst().get(0);

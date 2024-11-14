@@ -139,7 +139,6 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
     public KeyIterator getKeys(KeyRangeQuery query, StoreTransaction txh) throws BackendException {
         return executeKeySliceQuery(query.getKeyStart().as(StaticBuffer.ARRAY_FACTORY),
             query.getKeyEnd().as(StaticBuffer.ARRAY_FACTORY),
-            new FilterList(FilterList.Operator.MUST_PASS_ALL),
             query);
     }
 
@@ -150,7 +149,7 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
 
     @Override
     public KeyIterator getKeys(SliceQuery query, StoreTransaction txh) throws BackendException {
-        return executeKeySliceQuery(new FilterList(FilterList.Operator.MUST_PASS_ALL), query);
+        return executeKeySliceQuery(query);
     }
 
     @Override
@@ -161,13 +160,14 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
     public static Filter getFilter(SliceQuery query) {
         byte[] colStartBytes = query.getSliceStart().length() > 0 ? query.getSliceStart().as(StaticBuffer.ARRAY_FACTORY) : null;
         byte[] colEndBytes = query.getSliceEnd().length() > 0 ? query.getSliceEnd().as(StaticBuffer.ARRAY_FACTORY) : null;
-
-        Filter filter = new ColumnRangeFilter(colStartBytes, true, colEndBytes, false);
+        byte[] colEncodedStartBytes = TableStoreColumnBuilder.encodeColumn(colStartBytes);
+        byte[] colEncodedEndBytes = TableStoreColumnBuilder.encodeColumn(colEndBytes);
+        Filter filter = new ColumnRangeFilter(colEncodedStartBytes, true, colEncodedEndBytes, false);
 
         if (query.hasLimit()) {
             filter = new FilterList(FilterList.Operator.MUST_PASS_ALL,
                 filter,
-                new ColumnPaginationFilter(query.getLimit(), colStartBytes));
+                new ColumnPaginationFilter(query.getLimit(), colEncodedStartBytes));
         }
 
         logger.debug("Generated HBase Filter {}", filter);
@@ -237,13 +237,12 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
         storeManager.mutateMany(ImmutableMap.of(storeName, mutations), txh);
     }
 
-    private KeyIterator executeKeySliceQuery(FilterList filters, @Nullable SliceQuery columnSlice) throws BackendException {
-        return executeKeySliceQuery(null, null, filters, columnSlice);
+    private KeyIterator executeKeySliceQuery(@Nullable SliceQuery columnSlice) throws BackendException {
+        return executeKeySliceQuery(null, null, columnSlice);
     }
 
     private KeyIterator executeKeySliceQuery(@Nullable byte[] startKey,
                                              @Nullable byte[] endKey,
-                                             FilterList filters,
                                              @Nullable SliceQuery columnSlice) throws BackendException {
         Scan scan = new Scan().addFamily(columnFamilyBytes);
 
@@ -259,15 +258,18 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
         if (endKey != null)
             scan.withStopRow(endKey);
 
+        Filter filter = null;
         if (columnSlice != null) {
-            filters.addFilter(getFilter(columnSlice));
+            filter = getFilter(columnSlice);
+        } else {
+            filter = new FilterList(FilterList.Operator.MUST_PASS_ALL);
         }
 
         Table table = null;
 
         try {
             table = cnx.getTable(tableName);
-            return new RowIterator(table, table.getScanner(scan.setFilter(filters)), columnFamilyBytes);
+            return new RowIterator(table, table.getScanner(scan.setFilter(filter)), columnFamilyBytes);
         } catch (IOException e) {
             IOUtils.closeQuietly(table);
             throw new PermanentBackendException(e);
@@ -366,7 +368,7 @@ public class TableStoreKeyColumnValueStore implements KeyColumnValueStore {
 
         @Override
         public byte[] getColumn(Map.Entry<byte[], NavigableMap<Long, byte[]>> element) {
-            return element.getKey();
+                return TableStoreColumnBuilder.decodeColumn(element.getKey());
         }
 
         @Override

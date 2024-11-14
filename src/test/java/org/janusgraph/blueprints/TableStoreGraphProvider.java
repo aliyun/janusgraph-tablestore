@@ -36,7 +36,7 @@ public class TableStoreGraphProvider extends AbstractJanusGraphProvider {
         waitForBindablePort(2181);
         waitForBindablePort(16000);
         HBASE_CONTAINER = new TableStoreContainer();
-        HBASE_CONTAINER.start();
+//        HBASE_CONTAINER.start();
     }
 
     private static void waitForBindablePort(int port) {

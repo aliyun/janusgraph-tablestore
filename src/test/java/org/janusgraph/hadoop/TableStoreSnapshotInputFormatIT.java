@@ -33,8 +33,6 @@ import org.janusgraph.example.GraphOfTheGodsFactory;
 import org.janusgraph.util.system.ConfigurationUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -56,9 +54,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * takes TableStore snapshots of the graph table during the tests. The snapshots are used by
  * TableStoreSnapshotInputFormat.
  */
-@Testcontainers
+//@Testcontainers
 public class TableStoreSnapshotInputFormatIT extends AbstractInputFormatIT {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer(true);
 
     // Used by this test only. Need to be consistent with hbase-read-snapshot.properties

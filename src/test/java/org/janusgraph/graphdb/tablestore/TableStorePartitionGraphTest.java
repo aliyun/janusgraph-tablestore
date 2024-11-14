@@ -17,15 +17,14 @@ package org.janusgraph.graphdb.tablestore;
 import org.janusgraph.TableStoreContainer;
 import org.janusgraph.diskstorage.configuration.WriteConfiguration;
 import org.janusgraph.graphdb.JanusGraphPartitionGraphTest;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+
 
 /**
  * @author Matthias Broecheler (me@matthiasb.com)
  */
-@Testcontainers
+//@Testcontainers
 public class TableStorePartitionGraphTest extends JanusGraphPartitionGraphTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Override

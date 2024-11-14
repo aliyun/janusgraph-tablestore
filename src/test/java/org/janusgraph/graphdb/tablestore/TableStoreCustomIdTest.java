@@ -17,12 +17,10 @@ package org.janusgraph.graphdb.tablestore;
 import org.janusgraph.TableStoreContainer;
 import org.janusgraph.diskstorage.configuration.ModifiableConfiguration;
 import org.janusgraph.graphdb.JanusGraphCustomIdTest;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreCustomIdTest extends JanusGraphCustomIdTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Override

@@ -21,17 +21,15 @@ import org.apache.tinkerpop.gremlin.structure.util.GraphFactory;
 import org.janusgraph.TableStoreContainer;
 import org.janusgraph.diskstorage.configuration.WriteConfiguration;
 import org.janusgraph.util.system.ConfigurationUtil;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreInputFormatIT extends AbstractInputFormatIT {
-    @Container
+//    @Container
     private static final TableStoreContainer tableStore = new TableStoreContainer();
 
     private PropertiesConfiguration getGraphConfiguration(final String filename) throws ConfigurationException, IOException {

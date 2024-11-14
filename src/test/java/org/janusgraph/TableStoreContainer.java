@@ -35,19 +35,15 @@ import org.janusgraph.graphdb.database.idassigner.placement.SimpleBulkPlacementS
 import org.janusgraph.util.system.ConfigurationUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.BindMode;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.images.builder.ImageFromDockerfile;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.ROOT_NS;
 
-public class TableStoreContainer extends GenericContainer<TableStoreContainer> {
+
+public class TableStoreContainer{
     private static final Logger logger = LoggerFactory.getLogger(TableStoreContainer.class);
 
     public static final String HBASE_TARGET_DIR = "test.hbase.targetdir";
@@ -108,32 +104,31 @@ public class TableStoreContainer extends GenericContainer<TableStoreContainer> {
     }
 
     public TableStoreContainer(boolean mountRoot) {
-        super(new ImageFromDockerfile()
-            .withFileFromPath(".", getPath())
-            .withBuildArg("HBASE_VERSION", getVersion())
-            .withBuildArg("HBASE_UID", getUid())
-            .withBuildArg("HBASE_GID", getGid()));
-        addFixedExposedPort(2181, 2182);
-        addFixedExposedPort(16000, 16000);
-        addFixedExposedPort(16010, 16010);
-        addFixedExposedPort(16020, 16020);
-        addFixedExposedPort(16030, 16030);
-
-        if (mountRoot) {
-            try {
-                Files.createDirectories(getHBaseRootDir());
-            } catch (IOException e) {
-                logger.warn("failed to create folder", e);
-                throw new JanusGraphException(e);
-            }
-            addFileSystemBind(getHBaseRootDir().toString(), "/data/hbase", BindMode.READ_WRITE);
-        }
-
-        withCreateContainerCmdModifier(createContainerCmd -> {
-            createContainerCmd
-                .withHostName("localhost");
-        });
-        waitingFor(Wait.forLogMessage(".*Master has completed initialization.*", 1));
+//        super(new ImageFromDockerfile()
+//            .withFileFromPath(".", getPath())
+//            .withBuildArg("HBASE_VERSION", getVersion())
+//            .withBuildArg("HBASE_UID", getUid())
+//            .withBuildArg("HBASE_GID", getGid()));
+//        addFixedExposedPort(2181, 2182);
+//        addFixedExposedPort(16000, 16000);
+//        addFixedExposedPort(16010, 16010);
+//        addFixedExposedPort(16020, 16020);
+//        addFixedExposedPort(16030, 16030);
+//
+//        if (mountRoot) {
+//            try {
+//                Files.createDirectories(getHBaseRootDir());
+//            } catch (IOException e) {
+//                logger.warn("failed to create folder", e);
+//                throw new JanusGraphException(e);
+//            }
+//            addFileSystemBind(getHBaseRootDir().toString(), "/data/hbase", BindMode.READ_WRITE);
+//        }
+//        withCreateContainerCmdModifier(createContainerCmd -> {
+//            createContainerCmd
+//                .withHostName("localhost");
+//        });
+//        waitingFor(Wait.forLogMessage(".*Master has completed initialization.*", 1));
     }
 
     public Path getHBaseRootDir() {
@@ -185,6 +180,7 @@ public class TableStoreContainer extends GenericContainer<TableStoreContainer> {
 
     public ModifiableConfiguration getNamedConfiguration(String tableName, String graphName) {
         ModifiableConfiguration config;
+        System.out.println("abcccc");
         try {
             PropertiesConfiguration cc = ConfigurationUtil.loadPropertiesConfig("target/test-classes/tablestore.properties");
             CommonsConfiguration commonsConfiguration = new CommonsConfiguration(cc);

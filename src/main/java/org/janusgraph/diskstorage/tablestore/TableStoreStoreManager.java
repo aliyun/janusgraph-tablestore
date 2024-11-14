@@ -19,11 +19,7 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.ImmutableBiMap;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
@@ -31,12 +27,10 @@ import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Row;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.janusgraph.core.JanusGraphException;
@@ -60,8 +54,6 @@ import org.janusgraph.diskstorage.keycolumnvalue.KeyRange;
 import org.janusgraph.diskstorage.keycolumnvalue.StandardStoreFeatures;
 import org.janusgraph.diskstorage.keycolumnvalue.StoreFeatures;
 import org.janusgraph.diskstorage.keycolumnvalue.StoreTransaction;
-import org.janusgraph.diskstorage.util.BufferUtil;
-import org.janusgraph.diskstorage.util.StaticArrayBuffer;
 import org.janusgraph.diskstorage.util.time.TimestampProviders;
 import org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration;
 import org.janusgraph.graphdb.configuration.PreInitializeConfigOptions;
@@ -70,9 +62,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,14 +70,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
-import static org.janusgraph.diskstorage.Backend.EDGESTORE_NAME;
-import static org.janusgraph.diskstorage.Backend.INDEXSTORE_NAME;
 import static org.janusgraph.diskstorage.Backend.LOCK_STORE_SUFFIX;
-import static org.janusgraph.diskstorage.Backend.SYSTEM_MGMT_LOG_NAME;
+import static org.janusgraph.diskstorage.Backend.INDEXSTORE_NAME;
 import static org.janusgraph.diskstorage.Backend.SYSTEM_TX_LOG_NAME;
+import static org.janusgraph.diskstorage.Backend.EDGESTORE_NAME;
+import static org.janusgraph.diskstorage.Backend.SYSTEM_MGMT_LOG_NAME;
+import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.DROP_ON_CLEAR;
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.GRAPH_NAME;
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.IDS_STORE_NAME;
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.SYSTEM_PROPERTIES_STORE_NAME;
+
 
 /**
  * Storage Manager for HBase
@@ -102,19 +94,6 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
     public static final ConfigNamespace HBASE_NS =
         new ConfigNamespace(GraphDatabaseConfiguration.STORAGE_NS, "hbase", "HBase storage options");
 
-    public static final ConfigOption<Boolean> SHORT_CF_NAMES =
-        new ConfigOption<>(HBASE_NS, "short-cf-names",
-            "Whether to shorten the names of JanusGraph's column families to one-character mnemonics " +
-                "to conserve storage space", ConfigOption.Type.FIXED, true);
-
-    public static final String COMPRESSION_DEFAULT = "-DEFAULT-";
-
-    public static final ConfigOption<String> COMPRESSION =
-        new ConfigOption<>(HBASE_NS, "compression-algorithm",
-            "An HBase Compression.Algorithm enum string which will be applied to newly created column families. " +
-                "The compression algorithm must be installed and available on the HBase cluster.  JanusGraph cannot install " +
-                "and configure new compression algorithms on the HBase cluster by itself.",
-            ConfigOption.Type.MASKABLE, "GZ");
 
     public static final ConfigOption<Boolean> SKIP_SCHEMA_CHECK =
         new ConfigOption<>(HBASE_NS, "skip-schema-check",
@@ -132,71 +111,6 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
                 " to that value.",
             ConfigOption.Type.LOCAL, "janusgraph");
 
-    public static final ConfigOption<String> HBASE_SNAPSHOT =
-        new ConfigOption<>(HBASE_NS, "snapshot-name",
-            "The name of an existing HBase snapshot to be used by HBaseSnapshotInputFormat",
-            ConfigOption.Type.LOCAL, "janusgraph-snapshot");
-
-    public static final ConfigOption<String> HBASE_SNAPSHOT_RESTORE_DIR =
-        new ConfigOption<>(HBASE_NS, "snapshot-restore-dir",
-            "The temporary directory to be used by HBaseSnapshotInputFormat to restore a snapshot." +
-                " This directory should be on the same File System as the HBase root dir.",
-            ConfigOption.Type.LOCAL, System.getProperty("java.io.tmpdir"));
-
-    /**
-     * Related bug fixed in 0.98.0, 0.94.7, 0.95.0:
-     *
-     * https://issues.apache.org/jira/browse/HBASE-8170
-     */
-    public static final int MIN_REGION_COUNT = 3;
-
-    /**
-     * The total number of HBase regions to create with JanusGraph's table. This
-     * setting only effects table creation; this normally happens just once when
-     * JanusGraph connects to an HBase backend for the first time.
-     */
-    public static final ConfigOption<Integer> REGION_COUNT =
-        new ConfigOption<Integer>(HBASE_NS, "region-count",
-            "The number of initial regions set when creating JanusGraph's HBase table",
-            ConfigOption.Type.MASKABLE, Integer.class, input -> null != input && MIN_REGION_COUNT <= input);
-
-    /**
-     * This setting is used only when {@link #REGION_COUNT} is unset.
-     * <p>
-     * If JanusGraph's HBase table does not exist, then it will be created with total
-     * region count = (number of servers reported by ClusterStatus) * (this
-     * value).
-     * <p>
-     * The Apache HBase manual suggests an order-of-magnitude range of potential
-     * values for this setting:
-     *
-     * <ul>
-     *  <li>
-     *   <a href="https://hbase.apache.org/book/important_configurations.html#disable.splitting">2.5.2.7. Managed Splitting</a>:
-     *   <blockquote>
-     *    What's the optimal number of pre-split regions to create? Mileage will
-     *    vary depending upon your application. You could start low with 10
-     *    pre-split regions / server and watch as data grows over time. It's
-     *    better to err on the side of too little regions and rolling split later.
-     *   </blockquote>
-     *  </li>
-     *  <li>
-     *   <a href="https://hbase.apache.org/book/regions.arch.html">9.7 Regions</a>:
-     *   <blockquote>
-     *    In general, HBase is designed to run with a small (20-200) number of
-     *    relatively large (5-20Gb) regions per server... Typically you want to
-     *    keep your region count low on HBase for numerous reasons. Usually
-     *    right around 100 regions per RegionServer has yielded the best results.
-     *   </blockquote>
-     *  </li>
-     * </ul>
-     *
-     * These considerations may differ for other HBase implementations (e.g. MapR).
-     */
-    public static final ConfigOption<Integer> REGIONS_PER_SERVER =
-        new ConfigOption<>(HBASE_NS, "regions-per-server",
-            "The number of regions per regionserver to set when creating JanusGraph's HBase table",
-            ConfigOption.Type.MASKABLE, Integer.class);
 
     public static final int PORT_DEFAULT = 2181;  // Not used. Just for the parent constructor.
 
@@ -207,19 +121,11 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
 
     public static final byte[] defaultColumnFamilyNameBytes = Bytes.toBytes("s");
 
-    private static final StaticBuffer FOUR_ZERO_BYTES = BufferUtil.zeroBuffer(4);
-
     // Immutable instance fields
-    private final BiMap<String, String> shortCfNameMap;
     private final String tableNamePrefix;
-    private final String compression;
-    private final int regionCount;
-    private final int regionsPerServer;
+
     private final Connection cnx;
-    private final boolean shortCfNames;
     private final boolean skipSchemaCheck;
-    // Cached return value of getDeployment() as requesting it can be expensive.
-    private Deployment deployment = null;
 
     private final org.apache.hadoop.conf.Configuration hconf;
 
@@ -228,33 +134,18 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
     // Mutable instance state
     private final ConcurrentMap<String, TableStoreKeyColumnValueStore> openStores;
 
+    private final BiMap<String, String> shortCfNameMap;
+
     public TableStoreStoreManager(org.janusgraph.diskstorage.configuration.Configuration config) throws BackendException {
         super(config, PORT_DEFAULT);
-
         shortCfNameMap = createShortCfMap(config);
-
-        Preconditions.checkArgument(null != shortCfNameMap);
-        Collection<String> shorts = shortCfNameMap.values();
-        Preconditions.checkArgument(Sets.newHashSet(shorts).size() == shorts.size());
 
         this.tableNamePrefix = determineTableNamePrefix(config);
         if(tableNamePrefix.contains("_")) {
             throw new PermanentBackendException(String.format("tableNamePrefix %s contains invalid characters '_'",tableNamePrefix));
         }
-        this.compression = config.get(COMPRESSION);
-        this.regionCount = config.has(REGION_COUNT) ? config.get(REGION_COUNT) : -1;
-        this.regionsPerServer = config.has(REGIONS_PER_SERVER) ? config.get(REGIONS_PER_SERVER) : -1;
         this.skipSchemaCheck = config.get(SKIP_SCHEMA_CHECK);
 
-        /*
-         * Specifying both region count options is permitted but may be
-         * indicative of a misunderstanding, so issue a warning.
-         */
-        if (config.has(REGIONS_PER_SERVER) && config.has(REGION_COUNT)) {
-            logger.warn("Both {} and {} are set in JanusGraph's configuration, but "
-                    + "the former takes precedence and the latter will be ignored.",
-                REGION_COUNT, REGIONS_PER_SERVER);
-        }
 
         /* This static factory calls HBaseConfiguration.addHbaseResources(),
          * which in turn applies the contents of hbase-default.xml and then
@@ -290,8 +181,6 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
             logger.info("Copied Zookeeper Port from {} to {}: {}", GraphDatabaseConfiguration.STORAGE_PORT, zkPortKey, zkPort);
         }
 
-        this.shortCfNames = config.get(SHORT_CF_NAMES);
-
         try {
             this.cnx = ConnectionFactory.createConnection(hconf);
         } catch (IOException e) {
@@ -312,34 +201,9 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
         openStores = new ConcurrentHashMap<>();
     }
 
-    public static BiMap<String, String> createShortCfMap(Configuration config) {
-        return ImmutableBiMap.<String, String>builder()
-            .put(INDEXSTORE_NAME, "g")
-            .put(INDEXSTORE_NAME + LOCK_STORE_SUFFIX, "h")
-            .put(config.get(IDS_STORE_NAME), "i")
-            .put(EDGESTORE_NAME, "e")
-            .put(EDGESTORE_NAME + LOCK_STORE_SUFFIX, "f")
-            .put(SYSTEM_PROPERTIES_STORE_NAME, "s")
-            .put(SYSTEM_PROPERTIES_STORE_NAME + LOCK_STORE_SUFFIX, "t")
-            .put(SYSTEM_MGMT_LOG_NAME, "m")
-            .put(SYSTEM_TX_LOG_NAME, "l")
-            .build();
-    }
-
     @Override
     public Deployment getDeployment() {
-        if (null != deployment) {
-            return deployment;
-        }
-
-        List<KeyRange> local;
-        try {
-            local = getLocalKeyPartition();
-            deployment = null != local && !local.isEmpty() ? Deployment.LOCAL : Deployment.REMOTE;
-        } catch (BackendException e) {
-            throw new RuntimeException(e);
-        }
-        return deployment;
+        return Deployment.REMOTE;
     }
 
     @Override
@@ -366,21 +230,12 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
 
     @Override
     public StoreFeatures getFeatures() {
-
         Configuration c = GraphDatabaseConfiguration.buildGraphConfiguration();
-
         StandardStoreFeatures.Builder fb = new StandardStoreFeatures.Builder()
             .orderedScan(true).unorderedScan(true).batchMutation(true)
             .multiQuery(true).distributed(true).keyOrdered(true).storeTTL(true)
             .cellTTL(false).timestamps(true).preferredTimestamps(PREFERRED_TIMESTAMPS)
             .optimisticLocking(true).keyConsistent(c).localKeyPartition(false);
-
-//        try {
-//            fb.localKeyPartition(getDeployment() == Deployment.LOCAL);
-//        } catch (Exception e) {
-//            logger.warn("Unexpected exception during getDeployment()", e);
-//        }
-
         return fb.build();
     }
 
@@ -397,22 +252,21 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
         // In case of an addition and deletion with identical timestamps, the
         // deletion tombstone wins.
         // https://hbase.apache.org/book/versions.html#d244e4250
-        final Map<TableName, Map<StaticBuffer, Pair<List<Put>, Delete>>> commandsPerTable =
+        final Map<TableName, Map<StaticBuffer, Pair<List<Put>, List<Delete>>>> commandsPerTable =
             convertToCommands(mutations, putTimestamp, delTimestamp);
 
-        for (Map.Entry<TableName, Map<StaticBuffer, Pair<List<Put>, Delete>>> entry : commandsPerTable.entrySet()) {
+        for (Map.Entry<TableName, Map<StaticBuffer, Pair<List<Put>, List<Delete>>>> entry : commandsPerTable.entrySet()) {
             TableName tableName = entry.getKey();
-            Map<StaticBuffer, Pair<List<Put>, Delete>> commandsPerKey = entry.getValue();
+            Map<StaticBuffer, Pair<List<Put>, List<Delete>>> commandsPerKey = entry.getValue();
 
             final List<Row> batch = new ArrayList<>(commandsPerKey.size()); // actual batch operation
 
             // convert sorted commands into representation required for 'batch' operation
-            for (Pair<List<Put>, Delete> commands : commandsPerKey.values()) {
+            for (Pair<List<Put>, List<Delete>> commands : commandsPerKey.values()) {
                 if (commands.getFirst() != null && !commands.getFirst().isEmpty())
                     batch.addAll(commands.getFirst());
-
-                if (commands.getSecond() != null)
-                    batch.add(commands.getSecond());
+                if (commands.getSecond() != null && !commands.getSecond().isEmpty())
+                    batch.addAll(commands.getSecond());
             }
 
             try {
@@ -483,13 +337,20 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
     public void clearStorage() throws BackendException {
         String regex = "^" + tableNamePrefix+ "_.+$";
         try (Admin adm = getAdminInterface()) {
-            adm.deleteTables(regex);
+            if (this.storageConfig.get(DROP_ON_CLEAR)) {
+                adm.deleteTables(regex);
+            }else {
+                TableName[] tableNames = adm.listTableNames(regex);
+                for (TableName tableName : tableNames) {
+                    adm.truncateTable(tableName,false);
+                }
+            }
+
         } catch (IOException e)
         {
             throw new TemporaryBackendException(e);
         }
     }
-
 
     @Override
     public boolean exists() throws BackendException {
@@ -506,193 +367,6 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
     @Override
     public List<KeyRange> getLocalKeyPartition() throws BackendException {
         throw new UnsupportedOperationException();
-//        List<KeyRange> result = new LinkedList<>();
-//        try {
-//            if (skipSchemaCheck) {
-//                logger.debug("Skipping schema check");
-//                if (!exists()) throw new PermanentBackendException("TablePrefix " + tableNamePrefix + " doesn't exist!");
-//            } else {
-//                logger.debug("Performing schema check");
-//
-//            }
-//            Map<KeyRange, ServerName> normed = normalizeKeyBounds(getRegionLocations(tableName));
-//
-//            for (Map.Entry<KeyRange, ServerName> e : normed.entrySet()) {
-//                if (NetworkUtil.isLocalConnection(e.getValue().getHostname())) {
-//                    result.add(e.getKey());
-//                    logger.debug("Found local key/row partition {} on host {}", e.getKey(), e.getValue());
-//                } else {
-//                    logger.debug("Discarding remote {}", e.getValue());
-//                }
-//            }
-//        } catch (MasterNotRunningException e) {
-//            logger.warn("Unexpected MasterNotRunningException", e);
-//        } catch (ZooKeeperConnectionException e) {
-//            logger.warn("Unexpected ZooKeeperConnectionException", e);
-//        } catch (IOException e) {
-//            logger.warn("Unexpected IOException", e);
-//        }
-//        return result;
-    }
-
-    private List<HRegionLocation> getRegionLocations(TableName tableName)
-        throws IOException
-    {
-        return cnx.getRegionLocator(tableName).getAllRegionLocations();
-    }
-
-    /**
-     * Given a map produced by {@link Connection#getRegionLocator(TableName)}, transform
-     * each key from an {@link RegionInfo} to a {@link KeyRange} expressing the
-     * region's start and end key bounds using JanusGraph-partitioning-friendly
-     * conventions (start inclusive, end exclusive, zero bytes appended where
-     * necessary to make all keys at least 4 bytes long).
-     * <p/>
-     * This method iterates over the entries in its map parameter and performs
-     * the following conditional conversions on its keys. "Require" below means
-     * either a {@link Preconditions} invocation or an assertion. HRegionInfo
-     * sometimes returns start and end keys of zero length; this method replaces
-     * zero length keys with null before doing any of the checks described
-     * below. The parameter map and the values it contains are only read and
-     * never modified.
-     *
-     * <ul>
-     * <li>If an entry's HRegionInfo has null start and end keys, then first
-     * require that the parameter map is a singleton, and then return a
-     * single-entry map whose {@code KeyRange} has start and end buffers that
-     * are both four bytes of zeros.</li>
-     * <li>If the entry has a null end key (but non-null start key), put an
-     * equivalent entry in the result map with a start key identical to the
-     * input, except that zeros are appended to values less than 4 bytes long,
-     * and an end key that is four bytes of zeros.
-     * <li>If the entry has a null start key (but non-null end key), put an
-     * equivalent entry in the result map where the start key is four bytes of
-     * zeros, and the end key has zeros appended, if necessary, to make it at
-     * least 4 bytes long, after which one is added to the padded value in
-     * unsigned 32-bit arithmetic with overflow allowed.</li>
-     * <li>Any entry which matches none of the above criteria results in an
-     * equivalent entry in the returned map, except that zeros are appended to
-     * both keys to make each at least 4 bytes long, and the end key is then
-     * incremented as described in the last bullet point.</li>
-     * </ul>
-     *
-     * After iterating over the parameter map, this method checks that it either
-     * saw no entries with null keys, one entry with a null start key and a
-     * different entry with a null end key, or one entry with both start and end
-     * keys null. If any null keys are observed besides these three cases, the
-     * method will die with a precondition failure.
-     *
-     * @param locations A list of HRegionInfo
-     * @return JanusGraph-friendly expression of each region's rowkey boundaries
-     */
-    private Map<KeyRange, ServerName> normalizeKeyBounds(List<HRegionLocation> locations) {
-
-        HRegionLocation nullStart = null;
-        HRegionLocation nullEnd = null;
-
-        ImmutableMap.Builder<KeyRange, ServerName> b = ImmutableMap.builder();
-
-        for (HRegionLocation location : locations) {
-            RegionInfo regionInfo = location.getRegion();
-            ServerName serverName = location.getServerName();
-            byte[] startKey = regionInfo.getStartKey();
-            byte[] endKey = regionInfo.getEndKey();
-
-            if (0 == startKey.length) {
-                startKey = null;
-                logger.trace("Converted zero-length HBase startKey byte array to null");
-            }
-
-            if (0 == endKey.length) {
-                endKey = null;
-                logger.trace("Converted zero-length HBase endKey byte array to null");
-            }
-
-            if (null == startKey && null == endKey) {
-                Preconditions.checkState(1 == locations.size());
-                logger.debug("HBase table {} has a single region {}", tableNamePrefix, regionInfo);
-                // Choose arbitrary shared value = startKey = endKey
-                return b.put(new KeyRange(FOUR_ZERO_BYTES, FOUR_ZERO_BYTES), serverName).build();
-            } else if (null == startKey) {
-                logger.debug("Found HRegionInfo with null startKey on server {}: {}", serverName, regionInfo);
-                Preconditions.checkState(null == nullStart);
-                nullStart = location;
-                // I thought endBuf would be inclusive from the HBase javadoc, but in practice it is exclusive
-                StaticBuffer endBuf = StaticArrayBuffer.of(zeroExtend(endKey));
-                // Replace null start key with zeroes
-                b.put(new KeyRange(FOUR_ZERO_BYTES, endBuf), serverName);
-            } else if (null == endKey) {
-                logger.debug("Found HRegionInfo with null endKey on server {}: {}", serverName, regionInfo);
-                Preconditions.checkState(null == nullEnd);
-                nullEnd = location;
-                // Replace null end key with zeroes
-                b.put(new KeyRange(StaticArrayBuffer.of(zeroExtend(startKey)), FOUR_ZERO_BYTES), serverName);
-            } else {
-                // Convert HBase's inclusive end keys into exclusive JanusGraph end keys
-                StaticBuffer startBuf = StaticArrayBuffer.of(zeroExtend(startKey));
-                StaticBuffer endBuf = StaticArrayBuffer.of(zeroExtend(endKey));
-
-                KeyRange kr = new KeyRange(startBuf, endBuf);
-                b.put(kr, serverName);
-                logger.debug("Found HRegionInfo with non-null end and start keys on server {}: {}", serverName, regionInfo);
-            }
-        }
-
-        // Require either no null key bounds or a pair of them
-        Preconditions.checkState((null == nullStart) == (null == nullEnd));
-
-        // Check that every key in the result is at least 4 bytes long
-        Map<KeyRange, ServerName> result = b.build();
-        for (KeyRange kr : result.keySet()) {
-            Preconditions.checkState(4 <= kr.getStart().length());
-            Preconditions.checkState(4 <= kr.getEnd().length());
-        }
-
-        return result;
-    }
-
-    /**
-     * If the parameter is shorter than 4 bytes, then create and return a new 4
-     * byte array with the input array's bytes followed by zero bytes. Otherwise
-     * return the parameter.
-     *
-     * @param dataToPad non-null but possibly zero-length byte array
-     * @return either the parameter or a new array
-     */
-    private byte[] zeroExtend(byte[] dataToPad) {
-        assert null != dataToPad;
-
-        final int targetLength = 4;
-
-        if (targetLength <= dataToPad.length)
-            return dataToPad;
-
-        byte[] padded = new byte[targetLength];
-
-        System.arraycopy(dataToPad, 0, padded, 0, dataToPad.length);
-
-        for (int i = dataToPad.length; i < padded.length; i++)
-            padded[i] = (byte)0;
-
-        return padded;
-    }
-
-    public static String shortenCfName(BiMap<String, String> shortCfNameMap, String longName) throws PermanentBackendException {
-        final String s;
-        if (shortCfNameMap.containsKey(longName)) {
-            s = shortCfNameMap.get(longName);
-            Preconditions.checkNotNull(s);
-            logger.debug("Substituted default CF name \"{}\" with short form \"{}\" to reduce HBase KeyValue size", longName, s);
-        } else {
-            if (shortCfNameMap.containsValue(longName)) {
-                String fmt = "Must use CF long-form name \"%s\" instead of the short-form name \"%s\" when configured with %s=true";
-                String msg = String.format(fmt, shortCfNameMap.inverse().get(longName), longName, SHORT_CF_NAMES.getName());
-                throw new PermanentBackendException(msg);
-            }
-            s = longName;
-            logger.debug("Kept default CF name \"{}\" because it has no associated short form", s);
-        }
-        return s;
     }
 
     private TableDescriptor ensureTableExists(TableName tableName, int ttlInSeconds) throws BackendException {
@@ -724,75 +398,11 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
         setCFOptions(columnDescriptor, ttlInSeconds);
         desc.setColumnFamily(columnDescriptor.build());
         TableDescriptor td = desc.build();
-
-        int count; // total regions to create
-        String src;
-
-        if (MIN_REGION_COUNT <= (count = regionCount)) {
-            src = "region count configuration";
-        } else if (0 < regionsPerServer &&
-            MIN_REGION_COUNT <= (count = regionsPerServer * getEstimatedRegionServerCount(adm))) {
-            src = "ClusterStatus server count";
-        } else {
-            count = -1;
-            src = "default";
-        }
-
-        if (MIN_REGION_COUNT < count) {
-            adm.createTable(td, getStartKey(count), getEndKey(count), count);
-            logger.debug("Created table {} with region count {} from {}", tableName, count, src);
-        } else {
-            adm.createTable(td);
-            logger.debug("Created table {} with default start key, end key, and region count", tableName);
-        }
-
+        adm.createTable(td);
         return td;
     }
 
-    private int getEstimatedRegionServerCount(Admin adm)
-    {
-        int serverCount = -1;
-        try {
-            serverCount = adm.getRegionServers().size();
-            logger.debug("Read {} servers from HBase ClusterStatus", serverCount);
-        } catch (IOException e) {
-            logger.debug("Unable to retrieve HBase cluster status", e);
-        }
-        return serverCount;
-    }
-
-    /**
-     * This method generates the second argument to
-     * {@link Admin#createTable(TableDescriptor, byte[], byte[], int)}
-     * <p/>
-     * From the {@code createTable} javadoc:
-     * "The start key specified will become the end key of the first region of
-     * the table, and the end key specified will become the start key of the
-     * last region of the table (the first region has a null start key and
-     * the last region has a null end key)"
-     * <p/>
-     * To summarize, the {@code createTable} argument called "startKey" is
-     * actually the end key of the first region.
-     */
-    private byte[] getStartKey(int regionCount) {
-        ByteBuffer regionWidth = ByteBuffer.allocate(4);
-        regionWidth.putInt((int)(((1L << 32) - 1L) / regionCount)).flip();
-        return StaticArrayBuffer.of(regionWidth).getBytes(0, 4);
-    }
-
-    /**
-     * Companion to {@link #getStartKey(int)}. See its javadoc for details.
-     */
-    private byte[] getEndKey(int regionCount) {
-        ByteBuffer regionWidth = ByteBuffer.allocate(4);
-        regionWidth.putInt((int)(((1L << 32) - 1L) / regionCount * (regionCount - 1))).flip();
-        return StaticArrayBuffer.of(regionWidth).getBytes(0, 4);
-    }
-
     private void setCFOptions(ColumnFamilyDescriptorBuilder columnDescriptor, int ttlInSeconds) {
-        if (null != compression && !compression.equals(COMPRESSION_DEFAULT))
-            columnDescriptor.setCompressionType(Compression.Algorithm.valueOf(compression));
-
         if (ttlInSeconds > 0)
             columnDescriptor.setTimeToLive(ttlInSeconds);
     }
@@ -807,21 +417,21 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
      * @throws org.janusgraph.diskstorage.PermanentBackendException
      */
     @VisibleForTesting
-    Map<TableName, Map<StaticBuffer, Pair<List<Put>, Delete>>> convertToCommands(Map<String, Map<StaticBuffer, KCVMutation>> mutations,
+    Map<TableName, Map<StaticBuffer, Pair<List<Put>, List<Delete>>>> convertToCommands(Map<String, Map<StaticBuffer, KCVMutation>> mutations,
                                                                  final Long putTimestamp,
                                                                  final Long delTimestamp) throws PermanentBackendException {
         // A map of rowkey to commands (list of Puts, Delete)
 
-        Map<TableName, Map<StaticBuffer, Pair<List<Put>, Delete>>> commandsPerTable = new HashMap<>();
+        Map<TableName, Map<StaticBuffer, Pair<List<Put>, List<Delete>>>> commandsPerTable = new HashMap<>();
         for (Map.Entry<String, Map<StaticBuffer, KCVMutation>> entry : mutations.entrySet()) {
-            final Map<StaticBuffer, Pair<List<Put>, Delete>> commandsPerKey = new HashMap<>();
+            final Map<StaticBuffer, Pair<List<Put>, List<Delete>>> commandsPerKey = new HashMap<>();
             String tableNameSuffix = getTableNameSuffixForStoreName(entry.getKey());
             TableName tableName = getTableName(tableNameSuffix);
             for (Map.Entry<StaticBuffer, KCVMutation> m : entry.getValue().entrySet()) {
                 final byte[] key = m.getKey().as(StaticBuffer.ARRAY_FACTORY);
                 KCVMutation mutation = m.getValue();
 
-                Pair<List<Put>, Delete> commands = commandsPerKey.get(m.getKey());
+                Pair<List<Put>, List<Delete>> commands = commandsPerKey.get(m.getKey());
 
                 // The first time we go through the list of input <rowkey, KCVMutation>,
                 // create the holder for a particular rowkey
@@ -830,30 +440,35 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
                     // List of all the Puts for this rowkey, including the ones without TTL and with TTL.
                     final List<Put> putList = new ArrayList<>();
                     commands.setFirst(putList);
+                    final List<Delete> deleteList = new ArrayList<>();
+                    commands.setSecond(deleteList);
                     commandsPerKey.put(m.getKey(), commands);
                 }
 
                 if (mutation.hasDeletions()) {
-                    if (commands.getSecond() == null) {
-                        Delete d = new Delete(key);
-                        if (delTimestamp != null) {
-                            d.setTimestamp(delTimestamp);
-                        }
-                        commands.setSecond(d);
-                    }
-
+                    Delete d = delTimestamp != null ? new Delete(key,delTimestamp) : new Delete(key);
+                    int columnCount = 0;
                     for (StaticBuffer b : mutation.getDeletions()) {
-                        // commands.getSecond() is a Delete for this rowkey.
-                        addColumnToDelete(commands.getSecond(), b.as(StaticBuffer.ARRAY_FACTORY), delTimestamp);
+                        addColumnToDelete(d, b.as(StaticBuffer.ARRAY_FACTORY), delTimestamp);
+                        columnCount++;
+                        if (columnCount >= 1024) {
+                            commands.getSecond().add(d);
+                            columnCount = 0;
+                            d = delTimestamp != null ? new Delete(key,delTimestamp) : new Delete(key);
+                        }
+                    }
+                    if(!d.isEmpty()) {
+                        commands.getSecond().add(d);
                     }
                 }
 
                 if (mutation.hasAdditions()) {
                     // All the entries (column cells) with the rowkey use this one Put, except the ones with TTL.
-                    final Put putColumnsWithoutTtl = putTimestamp != null ? new Put(key, putTimestamp) : new Put(key);
+                    Put putColumnsWithoutTtl = putTimestamp != null ? new Put(key, putTimestamp) : new Put(key);
                     // At the end of this loop, there will be one Put entry in the commands.getFirst() list that
                     // contains all additions without TTL set, and possible multiple Put entries for columns
                     // that have TTL set.
+                    int columnCount = 0;
                     for (Entry e : mutation.getAdditions()) {
 
                         // Deal with TTL within the entry (column cell) first
@@ -877,7 +492,14 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
                             commands.getFirst().add(putColumnWithTtl);
                         } else {
                             addColumnToPut(putColumnsWithoutTtl, putTimestamp, e);
+                            columnCount++;
+                            if (columnCount >= 1024){
+                                commands.getFirst().add(putColumnsWithoutTtl);
+                                columnCount = 0;
+                                putColumnsWithoutTtl = putTimestamp != null ? new Put(key, putTimestamp) : new Put(key);
+                            }
                         }
+
                     }
                     // If there were any mutations without TTL set, add them to commands.getFirst()
                     if (!putColumnsWithoutTtl.isEmpty()) {
@@ -892,30 +514,28 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
     }
 
     private void addColumnToDelete(Delete d, byte[] qualifier, Long delTimestamp) {
+        byte[] encodedColumn = TableStoreColumnBuilder.encodeColumn(qualifier);
         if (delTimestamp != null) {
-            d.addColumns(defaultColumnFamilyNameBytes, qualifier, delTimestamp);
+            d.addColumns(defaultColumnFamilyNameBytes, encodedColumn, delTimestamp);
         } else {
-            d.addColumns(defaultColumnFamilyNameBytes, qualifier);
+            d.addColumns(defaultColumnFamilyNameBytes, encodedColumn);
         }
     }
 
     private void addColumnToPut(Put p, Long putTimestamp, Entry e) {
         final byte[] qualifier = e.getColumnAs(StaticBuffer.ARRAY_FACTORY);
+        byte[] encodedColumn = TableStoreColumnBuilder.encodeColumn(qualifier);
         final byte[] value = e.getValueAs(StaticBuffer.ARRAY_FACTORY);
         if (putTimestamp != null) {
-            p.addColumn(defaultColumnFamilyNameBytes, qualifier, putTimestamp, value);
+            p.addColumn(defaultColumnFamilyNameBytes, encodedColumn, putTimestamp, value);
         } else {
-            p.addColumn(defaultColumnFamilyNameBytes, qualifier, value);
+            p.addColumn(defaultColumnFamilyNameBytes, encodedColumn, value);
         }
     }
 
     private TableName getTableName(String tableNameSuffix) {
         String tableNameStr = tableNamePrefix + "_" + tableNameSuffix;
         return TableName.valueOf(tableNameStr);
-    }
-
-    private String getTableNameSuffixForStoreName(String storeName) throws PermanentBackendException {
-        return shortCfNames ? shortenCfName(shortCfNameMap, storeName) : storeName;
     }
 
     private Admin getAdminInterface() {
@@ -938,10 +558,41 @@ public class TableStoreStoreManager extends DistributedStoreManager implements K
         return hconf;
     }
 
-//    @Override
-//    public Object getHadoopManager() {
-//        return new HBaseHadoopStoreManager();
-//    }
+    public static BiMap<String, String> createShortCfMap(Configuration config) {
+        return ImmutableBiMap.<String, String>builder()
+                .put(INDEXSTORE_NAME, "g")
+                .put(INDEXSTORE_NAME + LOCK_STORE_SUFFIX, "h")
+                .put(config.get(IDS_STORE_NAME), "i")
+                .put(EDGESTORE_NAME, "e")
+                .put(EDGESTORE_NAME + LOCK_STORE_SUFFIX, "f")
+                .put(SYSTEM_PROPERTIES_STORE_NAME, "s")
+                .put(SYSTEM_PROPERTIES_STORE_NAME + LOCK_STORE_SUFFIX, "t")
+                .put(SYSTEM_MGMT_LOG_NAME, "m")
+                .put(SYSTEM_TX_LOG_NAME, "l")
+                .build();
+    }
+
+    public static String shortenCfName(BiMap<String, String> shortCfNameMap, String longName) throws PermanentBackendException {
+        final String s;
+        if (shortCfNameMap.containsKey(longName)) {
+            s = shortCfNameMap.get(longName);
+            Preconditions.checkNotNull(s);
+            logger.debug("Substituted default CF name \"{}\" with short form \"{}\" to reduce HBase KeyValue size", longName, s);
+        } else {
+            if (shortCfNameMap.containsValue(longName)) {
+                String fmt = "Must use CF long-form name \"%s\" instead of the short-form name \"%s\"";
+                String msg = String.format(fmt, shortCfNameMap.inverse().get(longName), longName);
+                throw new PermanentBackendException(msg);
+            }
+            s = longName;
+            logger.debug("Kept default CF name \"{}\" because it has no associated short form", s);
+        }
+        return s;
+    }
+    private String getTableNameSuffixForStoreName(String storeName) throws PermanentBackendException {
+        return shortenCfName(shortCfNameMap, storeName);
+    }
+
 }
 
 

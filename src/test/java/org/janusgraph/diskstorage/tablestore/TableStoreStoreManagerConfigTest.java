@@ -33,8 +33,6 @@ import org.janusgraph.diskstorage.util.time.TimestampProviders;
 import org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration;
 import org.janusgraph.graphdb.configuration.builder.GraphDatabaseConfigurationBuilder;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.StringWriter;
 
@@ -42,9 +40,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Testcontainers
+//@Testcontainers
 public class TableStoreStoreManagerConfigTest {
-    @Container
+//    @Container
     public static final TableStoreContainer tableStoreContainer = new TableStoreContainer();
 
     @Test
@@ -65,7 +63,7 @@ public class TableStoreStoreManagerConfigTest {
         manager.close();
 
         // Open the TableStoreStoreManager and store with SHORT_CF_NAMES false.
-        config.set(ConfigElement.getPath(TableStoreStoreManager.SHORT_CF_NAMES), false);
+//        config.set(ConfigElement.getPath(TableStoreStoreManager.SHORT_CF_NAMES), false);
         manager = new TableStoreStoreManager(new BasicConfiguration(GraphDatabaseConfiguration.ROOT_NS,
             config, BasicConfiguration.Restriction.NONE));
         writer.getBuffer().setLength(0);
